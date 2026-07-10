@@ -1,0 +1,80 @@
+name: Test on macOS
+
+on:
+  push:
+  workflow_dispatch:        # 允许在 GitHub 网页上手动触发
+
+jobs:
+  test-macos:
+    runs-on: macos-latest   # 免费的 macOS 运行环境
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check prerequisites
+        run: |
+          echo "=== macOS version ==="
+          sw_vers
+          echo ""
+          echo "=== bash version ==="
+          bash --version | head -1
+          echo ""
+          echo "=== curl version ==="
+          curl --version | head -1
+          echo ""
+          echo "=== python3 version ==="
+          python3 --version
+          echo ""
+          echo "=== File permissions ==="
+          ls -la download.sh download.command
+
+      - name: Syntax check
+        run: |
+          bash -n download.sh && echo "download.sh: SYNTAX OK"
+          bash -n download.command && echo "download.command: SYNTAX OK"
+
+      - name: Test --help
+        run: bash download.sh --help
+
+      - name: Test missing file
+        run: bash download.sh -f nonexistent.txt 2>&1 || true
+
+      - name: Test empty file
+        run: |
+          echo "# just a comment" > /tmp/empty.txt
+          bash download.sh -f /tmp/empty.txt 2>&1 || true
+
+      - name: Test bad URL
+        run: |
+          echo "https://not-lemon8.com/something" > /tmp/bad.txt
+          bash download.sh -f /tmp/bad.txt -o /tmp/test_bad 2>&1 || true
+          echo ""
+          echo "EXIT CODE: $?"
+
+      - name: Test real Lemon8 URL (page fetch + parse)
+        run: |
+          echo "https://www.lemon8-app.com/@lemon8_th/7298056546359345665?region=th" > /tmp/real.txt
+          bash download.sh -f /tmp/real.txt -o /tmp/test_output 2>&1 || true
+          echo ""
+          echo "EXIT CODE: $?"
+
+      - name: Test single URL mode
+        run: |
+          bash download.sh "https://www.lemon8-app.com/@test/12345?region=us" -o /tmp/single_test 2>&1 || true
+          echo ""
+          echo "EXIT CODE: $?"
+
+      - name: Test proxy parameter
+        run: |
+          echo "https://www.lemon8-app.com/@test/11111?region=th" > /tmp/proxy_test.txt
+          bash download.sh -f /tmp/proxy_test.txt -p http://127.0.0.1:7890 -o /tmp/proxy_out 2>&1 || true
+          echo ""
+          echo "EXIT CODE: $?"
+
+      - name: Summary
+        run: |
+          echo "============================================"
+          echo "  All macOS tests completed"
+          echo "  Check output above for each test result"
+          echo "============================================"
