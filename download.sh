@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🍋 Lemon8 Batch Image Downloader (macOS / Linux)
-# Zero dependencies — uses built-in curl and python3
+# 真正零依赖 — 只用系统自带的 curl + osascript (JavaScript)
 #
 # Usage:
 #   bash download.sh
@@ -57,9 +57,9 @@ if ! command -v curl &>/dev/null; then
     exit 1
 fi
 
-if ! command -v python3 &>/dev/null; then
-    echo "ERROR: python3 is required but not found." >&2
-    echo "       Install Xcode Command Line Tools: xcode-select --install" >&2
+if ! command -v osascript &>/dev/null; then
+    echo "ERROR: osascript is required but not found." >&2
+    echo "       This script requires macOS." >&2
     exit 1
 fi
 
@@ -76,6 +76,7 @@ yellow() { echo -e "${YELLOW}$*${NC}"; }
 # ==================== Curl helpers ====================
 CURL_OPTS=(-s -L --max-time 60 --connect-timeout 15
     -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
+
 # 自动补全 http:// 前缀
 if [[ -n "$PROXY" ]]; then
     case "$PROXY" in
@@ -85,7 +86,6 @@ if [[ -n "$PROXY" ]]; then
     CURL_OPTS+=(-x "$PROXY")
 fi
 
-# Fetch URL, save to a file, return path
 curl_page_to_file() {
     local url="$1"
     local dest="$2"
@@ -97,7 +97,6 @@ curl_page_to_file() {
         "$url"
 }
 
-# Download binary file with retries
 curl_download() {
     local url="$1"
     local dest="$2"
@@ -127,219 +126,323 @@ curl_download() {
     return 1
 }
 
-# ==================== Core Python helper ====================
-# This single python3 script does ALL data processing:
-#   mode=extract : reads HTML from stdin, outputs article JSON
-#   mode=meta    : reads image-list JSON from stdin, writes meta.json
+# ==================== JXA (JavaScript for Automation) ====================
+# macOS 自带 osascript + JavaScript 引擎，直接替代 python3
+# 零依赖：所有 JSON 解析 / URL 解码 / 文件读写都走这里
 
-PYTHON_EXTRACT=$(cat << 'PYEOF'
-import json, sys, re, os
-from urllib.parse import unquote
+# 启动时写一个 JXA 脚本到临时文件，后续反复调用
+JXA_HELPER=$(mktemp)
+cat > "$JXA_HELPER" << 'JXAEOF'
+ObjC.import('Foundation');
 
-def extract_article():
-    """Read HTML from stdin, extract article data, output JSON to stdout."""
-    raw = sys.stdin.read()
+// --- 工具函数 ---
 
-    # Find __remixContext script tag content
-    m = re.search(
-        r'<script\s+type="application/json"\s+data-ttark="__remixContext"[^>]*>(.*?)</script>',
-        raw, re.DOTALL
-    )
-    if not m:
-        # Try alternate: the data might be in a different script tag format
-        m = re.search(
-            r'data-ttark="__remixContext"[^>]*>\s*(.*?)\s*</script>',
-            raw, re.DOTALL
-        )
-    if not m:
-        sys.stderr.write("ERROR:Cannot find __remixContext\n")
-        sys.exit(1)
+function readFile(path) {
+    var s = $.NSString.stringWithContentsOfFileEncodingError(
+        $(path), $.NSUTF8StringEncoding, null
+    );
+    if (!s || !s.js) throw new Error('Cannot read: ' + path);
+    return s.js;
+}
 
-    encoded = m.group(1).strip()
-    # URL-decode (the JSON is percent-encoded, not HTML-encoded)
-    decoded = unquote(encoded)
-    data = json.loads(decoded)
+function writeFile(path, content) {
+    $.NSString.stringWithString($(content))
+        .writeToFileAtomicallyEncodingError($(path), true, $.NSUTF8StringEncoding, null);
+}
 
-    # Navigate: state.loaderData -> route key -> ArticleDetail
-    ld = data.get('state', {}).get('loaderData', {})
-    if not ld:
-        sys.stderr.write("ERROR:No loaderData in page state\n")
-        sys.exit(1)
+function stdout(s) {
+    var h = $.NSFileHandle.fileHandleWithStandardOutput;
+    h.writeData($(String(s)).dataUsingEncoding($.NSUTF8StringEncoding));
+}
 
-    article = None
-    # Strategy 1: find key matching user_link_name / article_id pattern
-    for k, v in ld.items():
-        if isinstance(v, dict) and ('$user_link_name_' in k or 'user_link_name' in k):
-            # Look for $ArticleDetail inside
-            for ak, av in v.items():
-                if isinstance(av, dict) and ('imageList' in av or 'articleClass' in av or 'largeImage' in av):
-                    article = av
-                    break
-            if not article and ('imageList' in v or 'articleClass' in v):
-                article = v
-            break
+function stderr(s) {
+    var h = $.NSFileHandle.fileHandleWithStandardError;
+    h.writeData($(String(s) + '\n').dataUsingEncoding($.NSUTF8StringEncoding));
+}
 
-    # Strategy 2: find any value that looks like article data
-    if not article:
-        for k, v in ld.items():
-            if isinstance(v, dict):
-                for ak, av in v.items():
-                    if isinstance(av, dict) and ('imageList' in av or 'largeImage' in av):
-                        article = av
-                        break
-                if article:
-                    break
+function die(msg) {
+    stderr('ERROR:' + msg);
+    $.NSApplication.sharedApplication.terminate(1);
+}
 
-    # Strategy 3: any direct loaderData value that looks like article data
-    if not article:
-        for k, v in ld.items():
-            if isinstance(v, dict) and ('imageList' in v or 'largeImage' in v):
-                article = v
-                break
+// --- 图片 URL 工具 ---
 
-    if not article:
-        # Check if the article is intentionally unavailable (region lock, deleted, etc.)
-        for k, v in ld.items():
-            if isinstance(v, dict):
-                for ak, av in v.items():
-                    if isinstance(av, dict) and 'unavailableReason' in av:
-                        reason = av['unavailableReason']
-                        sys.stderr.write(f"ERROR:Article unavailable (reason: {reason})\n")
-                        sys.exit(1)
-        # Dump available keys for debugging unknown cases
-        keys = []
-        for k, v in ld.items():
-            if isinstance(v, dict):
-                keys.append(f"{k}->{list(v.keys())[:5]}")
-            else:
-                keys.append(f"{k}->{type(v).__name__}")
-        sys.stderr.write(f"ERROR:Cannot find article. Keys: {keys}\n")
-        sys.exit(1)
+function makeHiRes(url) {
+    // 替换水印模板 → 高清原图
+    return url.replace(/~tplv-[^./]+/, '~tplv-sdweummd6v-origin');
+}
 
-    # Build output
-    title = str(article.get('title', 'untitled'))
-    author = 'unknown'
-    aobj = article.get('author')
-    if isinstance(aobj, dict):
-        author = str(aobj.get('nickName', aobj.get('nickname', 'unknown')))
-    article_class = str(article.get('articleClass', 'Unknown'))
-    image_list = article.get('imageList', [])
-    large_image = article.get('largeImage', None)
-    content = str(article.get('content', ''))
+function genAltCdn(url) {
+    // 生成备用 CDN 域名
+    var urls = [url];
+    if (url.indexOf('tiktokcdn.com') !== -1) {
+        var alt = url.replace(
+            /p16-lemon8-(sign|cross-sign)-sg\.tiktokcdn\.com/,
+            'p16-sign-sg.lemon8cdn.com'
+        );
+        if (alt !== url) urls.push(alt);
+    }
+    return urls;
+}
 
-    # Build image download list with CDN variants
-    images = []
-    idx = 0
+function dedup(arr) {
+    var seen = {};
+    return arr.filter(function(x) { return x && !(x in seen) ? (seen[x] = true) : false; });
+}
 
-    def make_hi_res(u):
-        """Replace watermark template with origin quality."""
-        return re.sub(r'~tplv-[^./]+', '~tplv-sdweummd6v-origin', u)
+// --- 主导出：模式 'extract' 或 'fields' 或 'meta' ---
 
-    def gen_alt_urls(u):
-        """Generate original + alternative CDN URLs."""
-        urls = [u]
-        if 'tiktokcdn.com' in u:
-            alt = re.sub(
-                r'p16-lemon8-(sign|cross-sign)-sg\.tiktokcdn\.com',
-                'p16-sign-sg.lemon8cdn.com', u
-            )
-            if alt != u:
-                urls.append(alt)
-        return list(set(urls))
+function doExtract(htmlPath) {
+    var html = readFile(htmlPath);
 
-    if article_class == 'Gallery' and image_list:
-        for img in image_list:
-            url = img.get('url', '')
-            hi_url = make_hi_res(url)
-            # 原图优先（保证能看），高清 + 备用 CDN 作为 fallback
-            primary = url
-            fallbacks = []
-            if hi_url and hi_url != url:
-                fallbacks += gen_alt_urls(hi_url)
-            # CDN 备用域名放在最后
-            cdn_alts = gen_alt_urls(url)
-            for u in cdn_alts:
-                if u not in fallbacks and u != primary:
-                    fallbacks.append(u)
-            images.append({
-                'index': idx,
-                'url': primary,
-                'altUrls': fallbacks,
-                'width': img.get('width', 0),
-                'height': img.get('height', 0),
-                'type': 'gallery'
-            })
-            idx += 1
-    elif article_class == 'Video' and large_image:
-        url = large_image.get('url', '')
-        hi_url = make_hi_res(url)
-        primary = url
-        fallbacks = []
-        if hi_url and hi_url != url:
-            fallbacks += gen_alt_urls(hi_url)
-        cdn_alts = gen_alt_urls(url)
-        for u in cdn_alts:
-            if u not in fallbacks and u != primary:
-                fallbacks.append(u)
-        images.append({
-            'index': 0,
-            'url': primary,
-            'altUrls': fallbacks,
-            'width': large_image.get('width', 0),
-            'height': large_image.get('height', 0),
-            'type': 'video_cover'
+    // 找 __remixContext
+    var re = /<script\s+type="application\/json"\s+data-ttark="__remixContext"[^>]*>([\s\S]*?)<\/script>/;
+    var m = html.match(re);
+    if (!m) {
+        re = /data-ttark="__remixContext"[^>]*>\s*([\s\S]*?)\s*<\/script>/;
+        m = html.match(re);
+    }
+    if (!m) die('Cannot find __remixContext');
+
+    var encoded = m[1].trim();
+    var decoded = decodeURIComponent(encoded);
+    var data = JSON.parse(decoded);
+
+    var ld = (data.state || {}).loaderData || {};
+    if (Object.keys(ld).length === 0) die('No loaderData in page state');
+
+    var article = null;
+
+    // 策略 1: 找 user_link_name 路由 → ArticleDetail
+    for (var k in ld) {
+        if (k.indexOf('user_link_name') !== -1 && typeof ld[k] === 'object') {
+            var route = ld[k];
+            for (var ak in route) {
+                if (typeof route[ak] === 'object' &&
+                    (route[ak].imageList || route[ak].articleClass || route[ak].largeImage)) {
+                    article = route[ak];
+                    break;
+                }
+            }
+            if (!article && (route.imageList || route.articleClass)) article = route;
+            break;
+        }
+    }
+
+    // 策略 2: 遍历所有 key 找 imageList
+    if (!article) {
+        for (var k in ld) {
+            if (typeof ld[k] !== 'object') continue;
+            var v = ld[k];
+            for (var ak in v) {
+                if (typeof v[ak] === 'object' && (v[ak].imageList || v[ak].largeImage)) {
+                    article = v[ak];
+                    break;
+                }
+            }
+            if (article) break;
+        }
+    }
+
+    // 策略 3: loaderData 本身的 value 就是 article
+    if (!article) {
+        for (var k in ld) {
+            if (typeof ld[k] === 'object' && (ld[k].imageList || ld[k].largeImage)) {
+                article = ld[k];
+                break;
+            }
+        }
+    }
+
+    // 检测 unavailable 状态
+    if (!article) {
+        for (var k in ld) {
+            var v = ld[k];
+            if (typeof v === 'object') {
+                for (var ak in v) {
+                    if (typeof v[ak] === 'object' && v[ak].unavailableReason) {
+                        die('Article unavailable (reason: ' + v[ak].unavailableReason + ')');
+                    }
+                }
+            }
+        }
+        var keys = Object.keys(ld).map(function(k) {
+            var v = ld[k];
+            return typeof v === 'object' ? k + '->' + Object.keys(v).slice(0,5).join(',') : k;
+        });
+        die('Cannot find article. Keys: ' + keys.join('; '));
+    }
+
+    var title = String(article.title || 'untitled');
+    var author = 'unknown';
+    if (article.author && typeof article.author === 'object') {
+        author = String(article.author.nickName || article.author.nickname || 'unknown');
+    }
+    var articleClass = String(article.articleClass || 'Unknown');
+    var imageList = article.imageList || [];
+    var largeImage = article.largeImage || null;
+
+    // 构建下载列表
+    var images = [];
+    var idx = 0;
+
+    if (articleClass === 'Gallery' && imageList.length > 0) {
+        imageList.forEach(function(img) {
+            var url = img.url || '';
+            var hiUrl = makeHiRes(url);
+            // 原图优先，高清 + CDN 作为 fallback
+            var primary = url;
+            var fallbacks = [];
+            if (hiUrl && hiUrl !== url) fallbacks = fallbacks.concat(genAltCdn(hiUrl));
+            genAltCdn(url).forEach(function(u) {
+                if (u !== primary && fallbacks.indexOf(u) === -1) fallbacks.push(u);
+            });
+            fallbacks = dedup(fallbacks);
+            images.push({
+                index: idx,
+                url: primary,
+                altUrls: fallbacks,
+                width: img.width || 0,
+                height: img.height || 0,
+                type: 'gallery'
+            });
+            idx++;
+        });
+    } else if (articleClass === 'Video' && largeImage) {
+        var url = largeImage.url || '';
+        var hiUrl = makeHiRes(url);
+        var primary = url;
+        var fallbacks = [];
+        if (hiUrl && hiUrl !== url) fallbacks = fallbacks.concat(genAltCdn(hiUrl));
+        genAltCdn(url).forEach(function(u) {
+            if (u !== primary && fallbacks.indexOf(u) === -1) fallbacks.push(u);
+        });
+        fallbacks = dedup(fallbacks);
+        images.push({
+            index: 0,
+            url: primary,
+            altUrls: fallbacks,
+            width: largeImage.width || 0,
+            height: largeImage.height || 0,
+            type: 'video_cover'
+        });
+    }
+
+    var result = {
+        title: title,
+        author: author,
+        articleClass: articleClass,
+        imageCount: images.length,
+        images: images
+    };
+    stdout(JSON.stringify(result));
+}
+
+function doFields(articleJsonPath) {
+    // 从 article JSON 文件提取基本字段，输出 bash 可 eval 的格式
+    var json = JSON.parse(readFile(articleJsonPath));
+    stdout('MGTITLE=' + JSON.stringify(String(json.title || 'untitled')) + '\n');
+    stdout('MGAUTHOR=' + JSON.stringify(String(json.author || 'unknown')) + '\n');
+    stdout('MGCLASS=' + JSON.stringify(String(json.articleClass || 'Unknown')) + '\n');
+    stdout('MGCOUNT=' + json.imageCount + '\n');
+}
+
+function doMeta(imagesJsonPath) {
+    // 读取 images JSON，加上环境变量，写出 meta.json
+    var images = JSON.parse(readFile(imagesJsonPath));
+    var meta = {
+        url:           $.NSProcessInfo.processInfo.environment.objectForKey('META_URL').js || '',
+        username:      $.NSProcessInfo.processInfo.environment.objectForKey('META_USERNAME').js || '',
+        articleId:     $.NSProcessInfo.processInfo.environment.objectForKey('META_ARTICLE_ID').js || '',
+        title:         $.NSProcessInfo.processInfo.environment.objectForKey('META_TITLE').js || '',
+        author:        $.NSProcessInfo.processInfo.environment.objectForKey('META_AUTHOR').js || '',
+        articleClass:  $.NSProcessInfo.processInfo.environment.objectForKey('META_ARTICLE_CLASS').js || '',
+        imageCount:    images.length,
+        downloadedAt:  $.NSProcessInfo.processInfo.environment.objectForKey('META_DOWNLOADED_AT').js || '',
+        proxy:         $.NSProcessInfo.processInfo.environment.objectForKey('META_PROXY').js || 'direct',
+        images:        images.map(function(img, i) {
+            return {
+                index: img.index,
+                width: img.width,
+                height: img.height,
+                url: img.url,
+                filename: pad(i+1, 2) + '_' + img.width + 'x' + img.height + '.webp'
+            };
         })
+    };
+    var dest = $.NSProcessInfo.processInfo.environment.objectForKey('META_DEST').js || 'meta.json';
+    writeFile(dest, JSON.stringify(meta, null, 2));
+}
 
-    result = {
-        'title': title,
-        'author': author,
-        'articleClass': article_class,
-        'imageCount': len(images),
-        'images': images
-    }
-    print(json.dumps(result, ensure_ascii=False))
+function doPick(field) {
+    // 从 stdin 读 JSON，输出指定字段
+    // 对象/数组 → JSON string；基本类型 → 原始值
+    var d = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile();
+    var s = $.NSString.alloc.initWithDataEncoding(d, $.NSUTF8StringEncoding).js;
+    if (!s) die('No input');
+    var obj = JSON.parse(s);
 
-
-def write_meta():
-    """Read image-list + metadata from env, write meta.json."""
-    image_list_json = sys.stdin.read()
-    images = json.loads(image_list_json)
-
-    meta = {
-        'url': os.environ.get('META_URL', ''),
-        'username': os.environ.get('META_USERNAME', ''),
-        'articleId': os.environ.get('META_ARTICLE_ID', ''),
-        'title': os.environ.get('META_TITLE', ''),
-        'author': os.environ.get('META_AUTHOR', ''),
-        'articleClass': os.environ.get('META_ARTICLE_CLASS', ''),
-        'imageCount': len(images),
-        'downloadedAt': os.environ.get('META_DOWNLOADED_AT', ''),
-        'proxy': os.environ.get('META_PROXY', 'direct'),
-        'images': [{
-            'index': img['index'],
-            'width': img['width'],
-            'height': img['height'],
-            'url': img['url'],
-            'filename': f"{img['index']+1:02d}_{img['width']}x{img['height']}.webp"
-        } for img in images]
+    // 处理 [N] 直接访问数组元素
+    var arrRoot = field.match(/^\[(\d+)\]$/);
+    if (arrRoot) {
+        stdout(JSON.stringify(obj[parseInt(arrRoot[1])]));
+        return;
     }
 
-    dest = os.environ.get('META_DEST', 'meta.json')
-    with open(dest, 'w', encoding='utf-8') as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
+    var val = field.split('.').reduce(function(o, k) {
+        var arrMatch = k.match(/^(.+)\[(\d+)\]$/);
+        if (arrMatch) {
+            var arr = (o || {})[arrMatch[1]];
+            return arr ? arr[parseInt(arrMatch[2])] : null;
+        }
+        return (o || {})[k];
+    }, obj);
 
+    if (val === undefined || val === null) stdout('');
+    else if (typeof val === 'object') stdout(JSON.stringify(val));
+    else stdout(String(val));
+}
 
-if __name__ == '__main__':
-    mode = sys.argv[1] if len(sys.argv) > 1 else 'extract'
-    if mode == 'extract':
-        extract_article()
-    elif mode == 'meta':
-        write_meta()
-    else:
-        sys.stderr.write(f"ERROR:Unknown mode: {mode}\n")
-        sys.exit(1)
-PYEOF
-)
+function pad(n, w) { var s = String(n); while (s.length < w) s = '0' + s; return s; }
+
+// --- 入口 ---
+var argv = (typeof arguments !== 'undefined') ? Array.prototype.slice.call(arguments) : [];
+// osascript 会把 -e 后面的参数传给脚本，通过 app 的 argv 获取
+// 备用: 从 NSProcessInfo 拿
+if (argv.length === 0) {
+    var rawArgs = $.NSProcessInfo.processInfo.arguments;
+    argv = [];
+    for (var i = 0; i < rawArgs.count; i++) {
+        argv.push(rawArgs.objectAtIndex(i).js);
+    }
+    // 去掉 osascript 自身的参数: osascript -l JavaScript script.scpt -- mode args...
+    // 实际格式: [osascript, -l, JavaScript, scriptPath, --, mode, arg1, ...]
+    var dashIdx = argv.indexOf('--');
+    if (dashIdx !== -1) argv = argv.slice(dashIdx + 1);
+}
+
+var mode = argv[0] || 'extract';
+
+try {
+    if (mode === 'extract') {
+        doExtract(argv[1]);
+    } else if (mode === 'fields') {
+        doFields(argv[1]);
+    } else if (mode === 'meta') {
+        doMeta(argv[1]);
+    } else if (mode === 'pick') {
+        doPick(argv[1]);
+    } else {
+        die('Unknown mode: ' + mode);
+    }
+} catch (e) {
+    die(e.message || String(e));
+}
+JXAEOF
+
+# 清理函数：脚本退出时删除 JXA 临时文件
+cleanup() { rm -f "$JXA_HELPER"; }
+trap cleanup EXIT
 
 # ==================== Helpers ====================
 
@@ -399,9 +502,9 @@ process_post() {
     size_kb=$(awk -v sz="$(wc -c < "$html_file")" 'BEGIN {printf "%.0f", sz/1024}')
     echo " OK (${size_kb} KB)"
 
-    # 2. Parse data using python3 (reads HTML from file via stdin)
+    # 2. 用 osascript JavaScript 提取文章数据
     local article_json
-    if ! article_json=$(python3 -c "$PYTHON_EXTRACT" extract < "$html_file" 2>&1); then
+    if ! article_json=$(osascript -l JavaScript "$JXA_HELPER" -- extract "$html_file" 2>&1); then
         rm -f "$html_file"
         red "   ERROR: Page structure may have changed"
         echo "   $article_json" | grep -q "ERROR:" && echo "   $article_json" >&2
@@ -410,29 +513,29 @@ process_post() {
     fi
     rm -f "$html_file"
 
-    # Extract fields from article JSON
-    local title author article_class image_count
-    title=$(echo "$article_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['title'])")
-    author=$(echo "$article_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['author'])")
-    article_class=$(echo "$article_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['articleClass'])")
-    image_count=$(echo "$article_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['imageCount'])")
+    # 3. 提取字段 → 写入临时文件后用 JXA fields 模式解析
+    local article_file
+    article_file=$(mktemp)
+    echo "$article_json" > "$article_file"
+    eval "$(osascript -l JavaScript "$JXA_HELPER" -- fields "$article_file" 2>/dev/null)"
+    rm -f "$article_file"
 
-    echo "   Title: $title"
-    echo "   Type : $article_class"
+    echo "   Title: $MGTITLE"
+    echo "   Type : $MGCLASS"
 
-    if [[ "$image_count" -eq 0 ]]; then
-        echo "   No images (type: $article_class)"
+    if [[ "$MGCOUNT" -eq 0 ]]; then
+        echo "   No images (type: $MGCLASS)"
         echo "OK:0|$username|$article_id"
         return 0
     fi
 
-    echo "   Images: $image_count"
+    echo "   Images: $MGCOUNT"
 
-    # Extract images JSON
+    # 4. 提取 images JSON 数组
     local images_json
-    images_json=$(echo "$article_json" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin)['images']))")
+    images_json=$(echo "$article_json" | osascript -l JavaScript "$JXA_HELPER" -- pick images 2>/dev/null)
 
-    # 3. Create output dir
+    # 5. 创建输出目录
     local folder_name safe_username safe_id post_dir
     safe_username=$(safe_folder_name "$username")
     safe_id=$(safe_folder_name "$article_id")
@@ -440,71 +543,74 @@ process_post() {
     post_dir="$output_root/$folder_name"
     mkdir -p "$post_dir"
 
-    # 4. Save metadata
+    # 6. 写 meta.json
     local downloaded_at proxy_val
     downloaded_at=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
     proxy_val="${PROXY:-direct}"
 
+    local images_file
+    images_file=$(mktemp)
+    echo "$images_json" > "$images_file"
+
     export META_URL="$url"
     export META_USERNAME="$username"
     export META_ARTICLE_ID="$article_id"
-    export META_TITLE="$title"
-    export META_AUTHOR="$author"
-    export META_ARTICLE_CLASS="$article_class"
+    export META_TITLE="$MGTITLE"
+    export META_AUTHOR="$MGAUTHOR"
+    export META_ARTICLE_CLASS="$MGCLASS"
     export META_DOWNLOADED_AT="$downloaded_at"
     export META_PROXY="$proxy_val"
     export META_DEST="$post_dir/meta.json"
 
-    echo "$images_json" | python3 -c "$PYTHON_EXTRACT" meta 2>/dev/null
+    osascript -l JavaScript "$JXA_HELPER" -- meta "$images_file" 2>/dev/null
+    rm -f "$images_file"
 
-    # 5. Download images
-    echo "   Downloading $image_count images..."
+    # 7. 下载图片
+    echo "   Downloading $MGCOUNT images..."
 
     local downloaded=0 failed=0
 
-    for ((idx=0; idx<image_count; idx++)); do
+    for ((idx=0; idx<MGCOUNT; idx++)); do
         local img_json
-        img_json=$(echo "$images_json" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin)[$idx]))")
+        img_json=$(echo "$images_json" | osascript -l JavaScript "$JXA_HELPER" -- pick "[$idx]" 2>/dev/null)
 
-        local i_width i_height i_alt_urls i_url
-        i_width=$(echo "$img_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['width'])")
-        i_height=$(echo "$img_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['height'])")
-        i_url=$(echo "$img_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['url'])")
-        i_alt_urls=$(echo "$img_json" | python3 -c "import json,sys; print('\n'.join(json.load(sys.stdin)['altUrls']))")
+        local i_width i_height i_url i_alt_urls
+        i_width=$(echo "$img_json" | osascript -l JavaScript "$JXA_HELPER" -- pick width 2>/dev/null)
+        i_height=$(echo "$img_json" | osascript -l JavaScript "$JXA_HELPER" -- pick height 2>/dev/null)
+        i_url=$(echo "$img_json" | osascript -l JavaScript "$JXA_HELPER" -- pick url 2>/dev/null)
+        i_alt_urls=$(echo "$img_json" | osascript -l JavaScript "$JXA_HELPER" -- pick altUrls 2>/dev/null | tr -d '[]"' | tr ',' '\n')
 
         local filename display_idx dest_path
         filename=$(printf "%02d_%dx%d.webp" $((idx + 1)) "$i_width" "$i_height")
         dest_path="$post_dir/$filename"
         display_idx=$((idx + 1))
 
-        # Skip existing
+        # 跳过已存在且有效的
         if [[ -f "$dest_path" ]]; then
             local existing_size
             existing_size=$(wc -c < "$dest_path" 2>/dev/null || echo 0)
             if [[ "$existing_size" -gt 0 ]]; then
-                echo "   SKIP [$display_idx/$image_count] $filename (exists)"
+                echo "   SKIP [$display_idx/$MGCOUNT] $filename (exists)"
                 downloaded=$((downloaded + 1))
                 continue
             fi
         fi
 
-        # Build candidate URL list: 首选链接 → 备选 → CDN备用域名
+        # 构建候选 URL 列表：主链接 → 备选 → CDN 备用域名
         local candidates=()
-        # 第一个候选：主链接（原图，最可靠）
         candidates+=("$i_url")
         [[ "$i_url" =~ tiktokcdn\.com ]] && candidates+=("$(echo "$i_url" | sed 's/p16-lemon8-\(sign\|cross-sign\)-sg\.tiktokcdn\.com/p16-sign-sg.lemon8cdn.com/')")
-        # 后续候选：备选链接（高清 + 备用 CDN）
         while IFS= read -r alt_url; do
             [[ -z "$alt_url" ]] && continue
             candidates+=("$alt_url")
             if [[ "$alt_url" =~ tiktokcdn\.com ]]; then
-                local alt
-                alt=$(echo "$alt_url" | sed 's/p16-lemon8-\(sign\|cross-sign\)-sg\.tiktokcdn\.com/p16-sign-sg.lemon8cdn.com/')
-                [[ "$alt" != "$alt_url" ]] && candidates+=("$alt")
+                local altd
+                altd=$(echo "$alt_url" | sed 's/p16-lemon8-\(sign\|cross-sign\)-sg\.tiktokcdn\.com/p16-sign-sg.lemon8cdn.com/')
+                [[ "$altd" != "$alt_url" ]] && candidates+=("$altd")
             fi
         done <<< "$i_alt_urls"
 
-        # Deduplicate while preserving order
+        # 去重
         local unique_candidates=()
         local seen=""
         for c in "${candidates[@]}"; do
@@ -516,14 +622,14 @@ process_post() {
 
         local success=0
         for candidate in "${unique_candidates[@]}"; do
-            local msg="   DOWNLOAD [$display_idx/$image_count] $filename"
+            local msg="   DOWNLOAD [$display_idx/$MGCOUNT] $filename"
             [[ "$candidate" != "${unique_candidates[0]}" ]] && msg="$msg (alt)"
             printf "%s ... " "$msg"
             if curl_download "$candidate" "$dest_path"; then
                 local fsize
                 fsize=$(wc -c < "$dest_path" 2>/dev/null || echo 0)
                 fsize=$((fsize / 1024))
-                # 校验是否为有效 WebP（文件头必须是 RIFF）
+                # 校验 WebP 文件头
                 local magic
                 magic=$(head -c 4 "$dest_path" 2>/dev/null)
                 if [[ "$magic" == "RIFF" ]]; then
@@ -541,7 +647,7 @@ process_post() {
         done
 
         if [[ $success -eq 0 ]]; then
-            red "   FAIL [$display_idx/$image_count] $filename"
+            red "   FAIL [$display_idx/$MGCOUNT] $filename"
             failed=$((failed + 1))
         fi
     done
@@ -555,7 +661,6 @@ process_post() {
 main() {
     local urls=()
 
-    # Read URLs
     if [[ -n "$SINGLE_URL" ]]; then
         urls=("$SINGLE_URL")
     else
@@ -575,7 +680,6 @@ main() {
         exit 0
     fi
 
-    # Show config
     local output_abs
     output_abs="$(cd "$(dirname "$OUTPUT_DIR")" 2>/dev/null && pwd)/$(basename "$OUTPUT_DIR")"
     [[ "$output_abs" == "//"* ]] && output_abs="$(pwd)/$OUTPUT_DIR"
@@ -584,7 +688,6 @@ main() {
     echo "URLs   : ${#urls[@]}"
     echo ""
 
-    # Process all URLs
     local ok_count=0 fail_count=0 total_images=0
     local failed_details=()
 
@@ -606,7 +709,6 @@ main() {
         esac
     done
 
-    # Summary
     echo ""
     printf "=%.0s" {1..55}
     echo ""

@@ -23,7 +23,7 @@ lemon8-downloader/
 | 平台 | 启动方式 | 核心脚本 | 依赖 |
 |------|---------|---------|------|
 | **Windows** | 双击 `download.bat` | `download.ps1` | 无（系统自带 PowerShell） |
-| **macOS** | 双击 `download.command` | `download.sh` | 无（系统自带 curl + python3） |
+| **macOS** | 双击 `download.command` | `download.sh` | 无（系统自带 curl + osascript） |
 
 ---
 
@@ -187,13 +187,10 @@ chmod +x download.command download.sh
 
 > 原因：从网盘/微信/压缩包传到 Mac 后，可执行权限会丢失。右键→打开可以绕过 Gatekeeper 的开发者验证，但前提是文件已有执行权限（第一步）。
 
-### Q: macOS 提示 "python3 is required"
+### Q: macOS 提示 "osascript is required"
 
-打开 **终端 (Terminal)**，运行：
-```bash
-xcode-select --install
-```
-按照提示安装命令行工具（约 1 分钟）。
+这个工具只支持 macOS。osascript 是 macOS 系统自带组件（位于 `/usr/bin/osascript`），
+任何 Mac 都有，无需额外安装。
 
 ### Q: 双击 `download.command` 没反应 / 一闪而过
 
@@ -212,4 +209,4 @@ xcode-select --install
 
 ### Q: 需要安装什么？
 
-**不需要。** Windows 自带 PowerShell，macOS 自带 curl 和 python3。
+**不需要。** Windows 自带 PowerShell，macOS 自带 curl 和 osascript（JavaScript 引擎）。

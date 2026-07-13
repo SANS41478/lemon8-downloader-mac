@@ -24,7 +24,7 @@ jobs:
           curl --version | head -1
           echo ""
           echo "=== python3 version ==="
-          python3 --version
+          osascript -l JavaScript -e '$.NSProcessInfo.processInfo.operatingSystemVersionString.js' 2>/dev/null || echo "osascript OK"
           echo ""
           echo "=== File permissions ==="
           ls -la download.sh download.command

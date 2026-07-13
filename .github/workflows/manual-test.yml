@@ -30,7 +30,7 @@ jobs:
           echo "=== macOS $(sw_vers -productVersion) ==="
           echo "bash: $(bash --version | head -1)"
           echo "curl: $(curl --version | head -1)"
-          echo "python3: $(python3 --version)"
+          echo "osascript: $(osascript -l JavaScript -e '$.NSProcessInfo.processInfo.operatingSystemVersionString.js' 2>/dev/null || echo 'OK')"
 
       - name: Prepare URL list
         run: |
