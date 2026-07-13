@@ -327,9 +327,11 @@ process_post() {
     fi
     echo "   Images: $MGCOUNT"
 
-    # 4. Extract images array → file
-    local images_json
-    images_json=$(echo "$article_json" | osascript -l JavaScript "$JXA_HELPER" -- pick images /dev/stdout 2>/dev/null || echo "")
+    # 4. Extract images array
+    local images_json pick1_out=$(mktemp)
+    echo "$article_json" | osascript -l JavaScript "$JXA_HELPER" -- pick images "$pick1_out" 2>/dev/null || true
+    images_json=$(cat "$pick1_out" 2>/dev/null || echo "")
+    rm -f "$pick1_out"
 
     # 5. Create output dir
     local safe_username=$(safe_folder_name "$username")
