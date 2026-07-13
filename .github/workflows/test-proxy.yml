@@ -149,3 +149,13 @@ jobs:
         if: always()
         run: |
           kill $PROXY_PID 2>/dev/null || true
+
+      - name: Upload all test images
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxy-test-images
+          path: |
+            /tmp/test_direct/**
+            /tmp/test_proxy/**
+          retention-days: 7
