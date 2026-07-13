@@ -614,16 +614,24 @@ process_post() {
         local unique_candidates=()
         local seen=""
         for c in "${candidates[@]}"; do
-            if [[ ! " $seen " =~ " $c " ]]; then
+            if [[ ! " $seen " == *" $c "* ]]; then
                 seen="$seen $c"
                 unique_candidates+=("$c")
             fi
         done
 
+        # 没有可下载的 URL 则跳过
+        if [[ ${#unique_candidates[@]} -eq 0 ]]; then
+            red "   FAIL [$display_idx/$MGCOUNT] $filename (no URLs)"
+            failed=$((failed + 1))
+            continue
+        fi
+
         local success=0
+        local first_url="${unique_candidates[0]}"
         for candidate in "${unique_candidates[@]}"; do
             local msg="   DOWNLOAD [$display_idx/$MGCOUNT] $filename"
-            [[ "$candidate" != "${unique_candidates[0]}" ]] && msg="$msg (alt)"
+            [[ "$candidate" != "$first_url" ]] && msg="$msg (alt)"
             printf "%s ... " "$msg"
             if curl_download "$candidate" "$dest_path"; then
                 local fsize
