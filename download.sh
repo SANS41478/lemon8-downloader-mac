@@ -208,12 +208,11 @@ else if(mode==='meta'){
     writeFile(dest,JSON.stringify(meta,null,2));
 }
 
-// ---------- pick ----------
+// ---------- pick (field, inputFile, outputFile) ----------
 else if(mode==='pick'){
-    var d=$.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile();
-    var s=$.NSString.alloc.initWithDataEncoding(d,$.NSUTF8StringEncoding).js;
-    if(!s)throw new Error('No stdin');
-    var obj=JSON.parse(s), field=argv[1];
+    var field=argv[1], inputFile=argv[2], outputFile=argv[3];
+    if(!inputFile||!field)throw new Error('pick needs field and inputFile');
+    var obj=JSON.parse(readFile(inputFile));
     var m2=field.match(/^\[(\d+)\]$/);
     var val;
     if(m2){ val=obj[parseInt(m2[1])]; }
@@ -227,7 +226,7 @@ else if(mode==='pick'){
     if(val===undefined||val===null)val='';
     else if(typeof val==='object')val=JSON.stringify(val);
     else val=String(val);
-    writeFile(argv[2],val);
+    writeFile(outputFile||argv[2],val);
 }
 
 else { throw new Error('Unknown mode: '+mode); }
@@ -328,10 +327,12 @@ process_post() {
     echo "   Images: $MGCOUNT"
 
     # 4. Extract images array
-    local images_json pick1_out=$(mktemp)
-    echo "$article_json" | osascript -l JavaScript "$JXA_HELPER" -- pick images "$pick1_out" 2>/dev/null || true
-    images_json=$(cat "$pick1_out" 2>/dev/null || echo "")
-    rm -f "$pick1_out"
+    local art_json_file=$(mktemp)
+    echo "$article_json" > "$art_json_file"
+    local images_out=$(mktemp)
+    osascript -l JavaScript "$JXA_HELPER" -- pick images "$art_json_file" "$images_out" 2>/dev/null || true
+    images_json=$(cat "$images_out" 2>/dev/null || echo "")
+    rm -f "$art_json_file" "$images_out"
 
     # 5. Create output dir
     local safe_username=$(safe_folder_name "$username")
@@ -355,25 +356,37 @@ process_post() {
     echo "   Downloading $MGCOUNT images..."
     local downloaded=0 failed=0 idx
 
-    # 存一份 images_json 到文件方便诊断
-    echo "$images_json" > /tmp/debug_images.json
+    # 保存 images_json 和 images array 到文件
+    local imgs_json_file=$(mktemp)
+    echo "$images_json" > "$imgs_json_file"
 
     for ((idx=0; idx<MGCOUNT; idx++)); do
+        # 取单个 image 对象
         local img_out=$(mktemp)
-        echo "$images_json" | osascript -l JavaScript "$JXA_HELPER" -- pick "[$idx]" "$img_out" 2>/tmp/debug_pick_err || true
+        osascript -l JavaScript "$JXA_HELPER" -- pick "[$idx]" "$imgs_json_file" "$img_out" 2>/dev/null || true
         local img_json=$(cat "$img_out" 2>/dev/null || echo "")
-        [[ $idx -eq 0 ]] && echo "   [DIAG] pick[$idx] err=$(cat /tmp/debug_pick_err 2>/dev/null) json_len=${#img_json}" >&2
         rm -f "$img_out"
 
+        if [[ -z "$img_json" ]]; then
+            red "   FAIL [$((idx+1))/$MGCOUNT] Could not extract image $idx"
+            failed=$((failed + 1))
+            continue
+        fi
+
+        # 把 image JSON 写文件，用于后续 pick
+        local img_file=$(mktemp)
+        echo "$img_json" > "$img_file"
+
         local w_out=$(mktemp) h_out=$(mktemp) u_out=$(mktemp) a_out=$(mktemp)
-        echo "$img_json" | osascript -l JavaScript "$JXA_HELPER" -- pick width "$w_out" 2>/dev/null || true
-        echo "$img_json" | osascript -l JavaScript "$JXA_HELPER" -- pick height "$h_out" 2>/dev/null || true
-        echo "$img_json" | osascript -l JavaScript "$JXA_HELPER" -- pick url "$u_out" 2>/dev/null || true
-        echo "$img_json" | osascript -l JavaScript "$JXA_HELPER" -- pick altUrls "$a_out" 2>/dev/null || true
+        osascript -l JavaScript "$JXA_HELPER" -- pick width  "$img_file" "$w_out" 2>/dev/null || true
+        osascript -l JavaScript "$JXA_HELPER" -- pick height "$img_file" "$h_out" 2>/dev/null || true
+        osascript -l JavaScript "$JXA_HELPER" -- pick url    "$img_file" "$u_out" 2>/dev/null || true
+        osascript -l JavaScript "$JXA_HELPER" -- pick altUrls "$img_file" "$a_out" 2>/dev/null || true
         local i_width=$(cat "$w_out" 2>/dev/null || echo 0)
         local i_height=$(cat "$h_out" 2>/dev/null || echo 0)
         local i_url=$(cat "$u_out" 2>/dev/null || echo "")
         local i_alt_urls=$(cat "$a_out" 2>/dev/null | tr -d '[]"' | tr ',' '\n')
+        rm -f "$img_file" "$w_out" "$h_out" "$u_out" "$a_out"
         rm -f "$w_out" "$h_out" "$u_out" "$a_out"
 
         local filename=$(printf "%02d_%dx%d.webp" $((idx + 1)) "$i_width" "$i_height")
