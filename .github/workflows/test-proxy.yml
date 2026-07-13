@@ -18,9 +18,7 @@ jobs:
 
       - name: Start dummy forward proxy
         run: |
-          pip3 install proxy.py 2>/dev/null || pip3 install proxy-py 2>/dev/null
-
-          # 如果 proxy.py 不可用, 用 Python 写一个最简转发代理
+          # 用 Python 写一个最简 HTTP 转发代理
           cat > /tmp/dummy_proxy.py << 'PYEOF'
           import socket, threading, sys, select
 
