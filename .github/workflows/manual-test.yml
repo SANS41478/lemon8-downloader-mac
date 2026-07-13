@@ -4,11 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'Lemon8 帖子 URL'
+        description: 'Lemon8 帖子 URL（多个链接一行一个）'
         required: true
-        default: 'https://www.lemon8-app.com/@lemon8_th/7298056546359345665?region=th'
+        default: |-
+          https://www.lemon8-app.com/@lemon8_th/7298056546359345665?region=th
       proxy:
-        description: 'HTTP 代理地址（可选，不用留空）'
+        description: '代理地址（⚠️ GitHub跑机在美国，一般不需要代理，留空即可）'
         required: false
         default: ''
       output:
@@ -31,13 +32,31 @@ jobs:
           echo "curl: $(curl --version | head -1)"
           echo "python3: $(python3 --version)"
 
+      - name: Prepare URL list
+        run: |
+          # 把输入写入文件，同时按换行和空格拆分 URL
+          cat > urls_raw.txt << 'EOF'
+          ${{ github.event.inputs.url }}
+          EOF
+          # 按空格和换行拆分成一行一个
+          tr ' \t' '\n' < urls_raw.txt | sed '/^\s*$/d' > urls_test.txt
+          # 统计有效链接数
+          TOTAL=$(wc -l < urls_test.txt | tr -d ' ')
+          echo "--- URLs to process ($TOTAL total) ---"
+          cat -n urls_test.txt
+
       - name: Run download.sh
         run: |
           PROXY_FLAG=""
-          if [ -n "${{ github.event.inputs.proxy }}" ]; then
-            PROXY_FLAG="-p ${{ github.event.inputs.proxy }}"
+          RAW_PROXY="${{ github.event.inputs.proxy }}"
+          if [ -n "$RAW_PROXY" ]; then
+            # 自动补全 http:// 前缀
+            case "$RAW_PROXY" in
+              http://*|https://*) PROXY_FLAG="-p $RAW_PROXY" ;;
+              *) PROXY_FLAG="-p http://$RAW_PROXY" ;;
+            esac
           fi
-          bash download.sh "${{ github.event.inputs.url }}" -o "${{ github.event.inputs.output }}" $PROXY_FLAG 2>&1
+          bash download.sh -f urls_test.txt -o "${{ github.event.inputs.output }}" $PROXY_FLAG 2>&1
           echo ""
           echo "EXIT CODE: $?"
 
