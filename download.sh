@@ -356,7 +356,7 @@ process_post() {
     echo "   Downloading $MGCOUNT images..."
     local downloaded=0 failed=0 idx
 
-    # 保存 images_json 和 images array 到文件
+    # images_json → file，后续 pick 全走文件
     local imgs_json_file=$(mktemp)
     echo "$images_json" > "$imgs_json_file"
 
@@ -428,13 +428,11 @@ process_post() {
         fi
 
         local success=0 first_url="${unique[0]}"
-        [[ $idx -eq 0 ]] && echo "   [DIAG] first URL=$first_url candidates=${#unique[@]}" >&2
         for candidate in "${unique[@]}"; do
             local msg="   DOWNLOAD [$display_idx/$MGCOUNT] $filename"
             [[ "$candidate" != "$first_url" ]] && msg="$msg (alt)"
             printf "%s ... " "$msg"
             if curl_download "$candidate" "$dest_path"; then
-                [[ $idx -eq 0 ]] && echo "   [DIAG] curl OK" >&2
                 local fsize=$(($(wc -c < "$dest_path" 2>/dev/null || echo 0) / 1024))
                 local magic=$(head -c 4 "$dest_path" 2>/dev/null)
                 if [[ "$magic" == "RIFF" ]]; then
@@ -457,6 +455,7 @@ process_post() {
         fi
     done
 
+    rm -f "$imgs_json_file"
     echo "   DONE: $downloaded ok, $failed failed -> $post_dir"
     echo "OK:$downloaded|$username|$article_id|$post_dir|$failed"
 }
