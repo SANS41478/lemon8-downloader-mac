@@ -10,7 +10,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Show environment
         run: |
@@ -27,5 +27,9 @@ jobs:
 
       - name: Setup tmate session
         uses: mxschmitt/action-tmate@v3
-        with:
-          limit-access-to-actor: true
+        # 注意：任何人都能看到 Actions 日志里的 SSH 连接信息
+        # 用完立即取消 workflow，不要长时间挂着
+        # 加强安全：去 https://github.com/settings/keys 添加 SSH 公钥后，
+        # 恢复下面这行（取消注释）可限制只有你能连：
+        # with:
+        #   limit-access-to-actor: true
