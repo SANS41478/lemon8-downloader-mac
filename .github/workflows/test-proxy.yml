@@ -120,13 +120,13 @@ jobs:
           echo "PROXY_PID=$PROXY_PID" >> $GITHUB_ENV
           echo "PROXY_READY=true" >> $GITHUB_ENV
 
-      - name: Test 1: No proxy (direct) — baseline
+      - name: "Test 1 — No proxy (direct, baseline)"
         run: |
           echo "=== Baseline: direct connection ==="
           bash download.sh "${{ github.event.inputs.url }}" -o /tmp/test_direct 2>&1
           echo "EXIT: $?"
 
-      - name: Test 2: With proxy — all traffic through forward proxy
+      - name: Test 2 — Through forward proxy
         run: |
           echo "=== Test: through proxy 127.0.0.1:18888 ==="
           bash download.sh "${{ github.event.inputs.url }}" -o /tmp/test_proxy -p http://127.0.0.1:18888 2>&1
@@ -135,7 +135,7 @@ jobs:
           echo "=== Downloaded via proxy ==="
           find /tmp/test_proxy -type f 2>/dev/null | head -20 || echo "(no files)"
 
-      - name: Test 3: Proxy offline — error handling
+      - name: Test 3 — Proxy offline (error handling)
         run: |
           echo "=== Test: unreachable proxy ==="
           bash download.sh "${{ github.event.inputs.url }}" -o /tmp/test_bad -p http://127.0.0.1:19999 2>&1
