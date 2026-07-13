@@ -55,8 +55,7 @@ jobs:
               *) PROXY_FLAG="-p http://$RAW_PROXY" ;;
             esac
           fi
-          mkdir -p /tmp/debug_logs
-          bash download.sh -f urls_test.txt -o "${{ github.event.inputs.output }}" $PROXY_FLAG >/tmp/debug_logs/stdout.log 2>/tmp/debug_logs/stderr.log; echo "EXIT: $?"
+          bash download.sh -f urls_test.txt -o "${{ github.event.inputs.output }}" $PROXY_FLAG 2>&1
           echo ""
           echo "EXIT CODE: $?"
 
@@ -68,14 +67,6 @@ jobs:
           echo ""
           echo "=== meta.json content ==="
           find "${{ github.event.inputs.output }}" -name meta.json -exec cat {} \; 2>/dev/null || echo "(no meta.json)"
-
-      - name: Upload debug logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-logs
-          path: /tmp/debug_logs/**
-          retention-days: 7
 
       - name: Upload downloaded images
         if: always()
