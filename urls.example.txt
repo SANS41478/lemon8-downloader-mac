@@ -1,7 +1,0 @@
-# Lemon8 post URLs
-# One URL per line, lines starting with # are comments
-# Copy this file to urls.txt and use it:
-#   cp urls.example.txt urls.txt
-#
-# Example:
-# https://www.lemon8-app.com/@username/123456789?region=th

@@ -6,7 +6,7 @@ cd /d "%~dp0"
 ::  Change PROXY_PORT to your proxy HTTP port
 ::  NO Node.js required (uses built-in PowerShell)
 :: ============================================
-set PROXY_PORT=7897
+set PROXY_PORT=10090
 set OUTPUT_DIR=images
 set URL_FILE=urls.txt
 set URL_EXAMPLE=urls.example.txt
