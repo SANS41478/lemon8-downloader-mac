@@ -355,10 +355,14 @@ process_post() {
     echo "   Downloading $MGCOUNT images..."
     local downloaded=0 failed=0 idx
 
+    # 存一份 images_json 到文件方便诊断
+    echo "$images_json" > /tmp/debug_images.json
+
     for ((idx=0; idx<MGCOUNT; idx++)); do
         local img_out=$(mktemp)
-        echo "$images_json" | osascript -l JavaScript "$JXA_HELPER" -- pick "[$idx]" "$img_out" 2>/dev/null || true
+        echo "$images_json" | osascript -l JavaScript "$JXA_HELPER" -- pick "[$idx]" "$img_out" 2>/tmp/debug_pick_err || true
         local img_json=$(cat "$img_out" 2>/dev/null || echo "")
+        [[ $idx -eq 0 ]] && echo "   [DIAG] pick[$idx] err=$(cat /tmp/debug_pick_err 2>/dev/null) json_len=${#img_json}" >&2
         rm -f "$img_out"
 
         local w_out=$(mktemp) h_out=$(mktemp) u_out=$(mktemp) a_out=$(mktemp)
@@ -411,11 +415,13 @@ process_post() {
         fi
 
         local success=0 first_url="${unique[0]}"
+        [[ $idx -eq 0 ]] && echo "   [DIAG] first URL=$first_url candidates=${#unique[@]}" >&2
         for candidate in "${unique[@]}"; do
             local msg="   DOWNLOAD [$display_idx/$MGCOUNT] $filename"
             [[ "$candidate" != "$first_url" ]] && msg="$msg (alt)"
             printf "%s ... " "$msg"
             if curl_download "$candidate" "$dest_path"; then
+                [[ $idx -eq 0 ]] && echo "   [DIAG] curl OK" >&2
                 local fsize=$(($(wc -c < "$dest_path" 2>/dev/null || echo 0) / 1024))
                 local magic=$(head -c 4 "$dest_path" 2>/dev/null)
                 if [[ "$magic" == "RIFF" ]]; then
