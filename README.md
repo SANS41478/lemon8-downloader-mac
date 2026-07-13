@@ -153,15 +153,30 @@ images/
 
 ---
 
-## 原理
+## 技术原理
 
 ```
-Lemon8 帖子 URL
-    ↓  抓取页面 HTML
-解析 <script data-ttark="__remixContext"> 中的 JSON
-    ↓  提取 imageList / largeImage
-通过代理下载 → 保存为 .webp
+Lemon8 帖子 HTML
+    ↓  curl 抓取
+<script data-ttark="__remixContext">  %编码的 JSON
+    ↓  decodeURIComponent() → JSON.parse()
+imageList / largeImage  →  构建下载列表
+    ↓  curl 下载
+保存为 .webp（自动校验 RIFF 文件头）
 ```
+
+### 零依赖是怎么做到的
+
+| 功能 | Windows 实现 | macOS 实现 |
+|------|-------------|-----------|
+| HTTP 请求 | PowerShell `Invoke-WebRequest` | 系统自带 `curl` |
+| JSON 解析 | PowerShell `ConvertFrom-Json` | 系统自带 `osascript` (JavaScript 引擎) |
+| URL 解码 | PowerShell 内建 | `decodeURIComponent()` |
+| 文件操作 | PowerShell 内建 | bash + `osascript` (ObjC 桥) |
+
+> macOS 从 10.10 Yosemite 起内置 JavaScript for Automation (JXA)，
+> 提供完整的 ECMAScript 引擎 + Foundation 框架桥接。
+> **无需安装 Xcode、brew、python、node.js。**
 
 - **Gallery 帖子**：下载所有图片
 - **Video 帖子**：下载封面图
@@ -187,10 +202,14 @@ chmod +x download.command download.sh
 
 > 原因：从网盘/微信/压缩包传到 Mac 后，可执行权限会丢失。右键→打开可以绕过 Gatekeeper 的开发者验证，但前提是文件已有执行权限（第一步）。
 
-### Q: macOS 提示 "osascript is required"
+### Q: macOS 需要装什么？Node.js？Python？Xcode？
 
-这个工具只支持 macOS。osascript 是 macOS 系统自带组件（位于 `/usr/bin/osascript`），
-任何 Mac 都有，无需额外安装。
+**什么都不用装。** 这个工具只用 macOS 出厂自带的两个东西：
+
+- `curl` — 下载网页和图片（macOS 从 2001 年起就有）
+- `osascript` + JavaScript 引擎 — 解析 JSON、处理数据（macOS 10.10 起内置）
+
+不需要 `brew`、`pip`、`npm`、`Xcode`、`python3`，开箱即用。
 
 ### Q: 双击 `download.command` 没反应 / 一闪而过
 
