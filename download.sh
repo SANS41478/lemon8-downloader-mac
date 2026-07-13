@@ -162,7 +162,7 @@ function stderr(s) {
 
 function die(msg) {
     stderr('ERROR:' + msg);
-    $.NSApplication.sharedApplication.terminate(1);
+    throw new Error(msg);
 }
 
 // --- 图片 URL 工具 ---
@@ -507,11 +507,14 @@ process_post() {
     if ! article_json=$(osascript -l JavaScript "$JXA_HELPER" -- extract "$html_file" 2>&1); then
         rm -f "$html_file"
         red "   ERROR: Page structure may have changed"
-        echo "   $article_json" | grep -q "ERROR:" && echo "   $article_json" >&2
+        echo "   [JXA] $article_json" >&2
         echo "FAIL:parse|$username|$url"
         return 0
     fi
     rm -f "$html_file"
+
+    # 诊断
+    echo "   [DEBUG] article_json len=$(echo "$article_json" | wc -c) first=$(echo "$article_json" | head -c 200)" >&2
 
     # 3. 提取字段 → 写入临时文件后用 JXA fields 模式解析
     local article_file
