@@ -76,7 +76,14 @@ yellow() { echo -e "${YELLOW}$*${NC}"; }
 # ==================== Curl helpers ====================
 CURL_OPTS=(-s -L --max-time 60 --connect-timeout 15
     -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
-[[ -n "$PROXY" ]] && CURL_OPTS+=(-x "$PROXY")
+# 自动补全 http:// 前缀
+if [[ -n "$PROXY" ]]; then
+    case "$PROXY" in
+        http://*|https://*|socks4://*|socks5://*) ;;
+        *) PROXY="http://$PROXY" ;;
+    esac
+    CURL_OPTS+=(-x "$PROXY")
+fi
 
 # Fetch URL, save to a file, return path
 curl_page_to_file() {

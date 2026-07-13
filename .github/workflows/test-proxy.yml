@@ -1,0 +1,153 @@
+name: Test Proxy Support
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: '测试用的 Lemon8 帖子 URL'
+        required: true
+        default: 'https://www.lemon8-app.com/@lemon8_th/7298056546359345665?region=th'
+
+jobs:
+  test-proxy:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Start dummy forward proxy
+        run: |
+          pip3 install proxy.py 2>/dev/null || pip3 install proxy-py 2>/dev/null
+
+          # 如果 proxy.py 不可用, 用 Python 写一个最简转发代理
+          cat > /tmp/dummy_proxy.py << 'PYEOF'
+          import socket, threading, sys, select
+
+          def handle_client(client_sock):
+              try:
+                  # 读客户端请求的第一行
+                  data = client_sock.recv(4096)
+                  if not data:
+                      client_sock.close()
+                      return
+
+                  first_line = data.split(b'\r\n')[0].decode()
+                  parts = first_line.split()
+                  if len(parts) < 2:
+                      client_sock.close()
+                      return
+
+                  method = parts[0]
+                  target = parts[1]
+
+                  if method == 'CONNECT':
+                      # HTTPS: 解析 host:port
+                      host, port = target.split(':')
+                      port = int(port)
+                  else:
+                      # HTTP: 从 URL 中解析
+                      if target.startswith('http://'):
+                          target = target[7:]
+                      if '/' in target:
+                          host_port = target.split('/')[0]
+                      else:
+                          host_port = target
+                      if ':' in host_port:
+                          host, port = host_port.split(':')
+                          port = int(port)
+                      else:
+                          host = host_port
+                          port = 80
+
+                  # 连接目标服务器
+                  remote_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                  remote_sock.settimeout(15)
+                  remote_sock.connect((host, port))
+
+                  if method == 'CONNECT':
+                      client_sock.sendall(b'HTTP/1.1 200 Connection Established\r\n\r\n')
+                  else:
+                      remote_sock.sendall(data)
+
+                  # 双向转发
+                  sockets = [client_sock, remote_sock]
+                  while True:
+                      readable, _, _ = select.select(sockets, [], [], 30)
+                      if not readable:
+                          break
+                      for s in readable:
+                          other = remote_sock if s is client_sock else client_sock
+                          buf = s.recv(8192)
+                          if not buf:
+                              return
+                          other.sendall(buf)
+              except Exception:
+                  pass
+              finally:
+                  client_sock.close()
+                  try:
+                      remote_sock.close()
+                  except:
+                      pass
+
+          def main():
+              port = 18888
+              server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+              server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+              server.bind(('127.0.0.1', port))
+              server.listen(10)
+              print(f'Proxy listening on 127.0.0.1:{port}')
+
+              while True:
+                  client, _ = server.accept()
+                  t = threading.Thread(target=handle_client, args=(client,), daemon=True)
+                  t.start()
+
+          if __name__ == '__main__':
+              main()
+          PYEOF
+
+          python3 /tmp/dummy_proxy.py &
+          PROXY_PID=$!
+          echo "Proxy PID: $PROXY_PID"
+
+          # 等代理启动
+          sleep 2
+          # 验证代理在跑
+          curl -s -o /dev/null -w "%{http_code}" --connect-timeout 3 -x http://127.0.0.1:18888 http://httpbin.org/ip 2>/dev/null || echo "(proxy health check done)"
+
+          echo "PROXY_PID=$PROXY_PID" >> $GITHUB_ENV
+          echo "PROXY_READY=true" >> $GITHUB_ENV
+
+      - name: Test 1: No proxy (direct) — baseline
+        run: |
+          echo "=== Baseline: direct connection ==="
+          bash download.sh "${{ github.event.inputs.url }}" -o /tmp/test_direct 2>&1
+          echo "EXIT: $?"
+
+      - name: Test 2: With proxy — all traffic through forward proxy
+        run: |
+          echo "=== Test: through proxy 127.0.0.1:18888 ==="
+          bash download.sh "${{ github.event.inputs.url }}" -o /tmp/test_proxy -p http://127.0.0.1:18888 2>&1
+          echo "EXIT: $?"
+          echo ""
+          echo "=== Downloaded via proxy ==="
+          find /tmp/test_proxy -type f 2>/dev/null | head -20 || echo "(no files)"
+
+      - name: Test 3: Proxy offline — error handling
+        run: |
+          echo "=== Test: unreachable proxy ==="
+          bash download.sh "${{ github.event.inputs.url }}" -o /tmp/test_bad -p http://127.0.0.1:19999 2>&1
+          echo "EXIT: $?"
+
+      - name: Test 4: Auto http:// prefix
+        run: |
+          echo "=== Test: proxy without http:// prefix ==="
+          bash download.sh "${{ github.event.inputs.url }}" -o /tmp/test_prefix -p 127.0.0.1:18888 2>&1
+          echo "EXIT: $?"
+
+      - name: Stop proxy
+        if: always()
+        run: |
+          kill $PROXY_PID 2>/dev/null || true
