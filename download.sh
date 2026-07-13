@@ -481,18 +481,19 @@ process_post() {
             fi
         fi
 
-        # Build candidate URL list (deduplicated)
+        # Build candidate URL list: 首选链接 → 备选 → CDN备用域名
         local candidates=()
-        while IFS= read -r cdn_url; do
-            [[ -z "$cdn_url" ]] && continue
-            # Also generate alt CDN variants
-            candidates+=("$cdn_url")
-            if [[ "$cdn_url" =~ tiktokcdn\.com ]]; then
+        # 第一个候选：主链接（原图，最可靠）
+        candidates+=("$i_url")
+        [[ "$i_url" =~ tiktokcdn\.com ]] && candidates+=("$(echo "$i_url" | sed 's/p16-lemon8-\(sign\|cross-sign\)-sg\.tiktokcdn\.com/p16-sign-sg.lemon8cdn.com/')")
+        # 后续候选：备选链接（高清 + 备用 CDN）
+        while IFS= read -r alt_url; do
+            [[ -z "$alt_url" ]] && continue
+            candidates+=("$alt_url")
+            if [[ "$alt_url" =~ tiktokcdn\.com ]]; then
                 local alt
-                alt=$(echo "$cdn_url" | sed 's/p16-lemon8-\(sign\|cross-sign\)-sg\.tiktokcdn\.com/p16-sign-sg.lemon8cdn.com/')
-                if [[ "$alt" != "$cdn_url" ]]; then
-                    candidates+=("$alt")
-                fi
+                alt=$(echo "$alt_url" | sed 's/p16-lemon8-\(sign\|cross-sign\)-sg\.tiktokcdn\.com/p16-sign-sg.lemon8cdn.com/')
+                [[ "$alt" != "$alt_url" ]] && candidates+=("$alt")
             fi
         done <<< "$i_alt_urls"
 
