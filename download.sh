@@ -513,8 +513,6 @@ process_post() {
     fi
     rm -f "$html_file"
 
-    # 诊断
-    echo "   [DEBUG] article_json len=$(echo "$article_json" | wc -c) first=$(echo "$article_json" | head -c 200)" >&2
 
     # 3. 提取字段 → 写入临时文件后用 JXA fields 模式解析
     local article_file
