@@ -6,7 +6,7 @@ on:
       url:
         description: '测试用的 Lemon8 帖子 URL'
         required: true
-        default: 'https://www.lemon8-app.com/@ashreneealtman/7661302423494902302?region=us'
+        default: 'https://www.lemon8-app.com/@lemon8_th/7298056546359345665?region=th'
 
 jobs:
   test-proxy:
