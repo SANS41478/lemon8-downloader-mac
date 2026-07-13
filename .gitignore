@@ -11,3 +11,4 @@ test_output/
 
 # 用户自己的链接文件（不提交到 git）
 urls.txt
+images/
