@@ -1,0 +1,31 @@
+name: SSH into macOS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ssh:
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          echo "============================================"
+          echo "  macOS $(sw_vers -productVersion) ($(uname -m))"
+          echo "  Host: $(hostname)"
+          echo "  User: $(whoami)"
+          echo "  bash:  $(bash --version | head -1)"
+          echo "  curl:  $(curl --version | head -1)"
+          echo "  python3: $(python3 --version)"
+          echo ""
+          echo "  Waiting for SSH connection..."
+          echo "============================================"
+
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true

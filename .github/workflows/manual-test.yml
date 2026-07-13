@@ -1,0 +1,59 @@
+name: Manual Test (Custom URL)
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'Lemon8 帖子 URL'
+        required: true
+        default: 'https://www.lemon8-app.com/@lemon8_th/7298056546359345665?region=th'
+      proxy:
+        description: 'HTTP 代理地址（可选，不用留空）'
+        required: false
+        default: ''
+      output:
+        description: '输出目录'
+        required: false
+        default: 'images'
+
+jobs:
+  test:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          echo "=== macOS $(sw_vers -productVersion) ==="
+          echo "bash: $(bash --version | head -1)"
+          echo "curl: $(curl --version | head -1)"
+          echo "python3: $(python3 --version)"
+
+      - name: Run download.sh
+        run: |
+          PROXY_FLAG=""
+          if [ -n "${{ github.event.inputs.proxy }}" ]; then
+            PROXY_FLAG="-p ${{ github.event.inputs.proxy }}"
+          fi
+          bash download.sh "${{ github.event.inputs.url }}" -o "${{ github.event.inputs.output }}" $PROXY_FLAG 2>&1
+          echo ""
+          echo "EXIT CODE: $?"
+
+      - name: Show results
+        if: always()
+        run: |
+          echo "=== Downloaded files ==="
+          find "${{ github.event.inputs.output }}" -type f 2>/dev/null | head -50 || echo "(no files)"
+          echo ""
+          echo "=== meta.json content ==="
+          find "${{ github.event.inputs.output }}" -name meta.json -exec cat {} \; 2>/dev/null || echo "(no meta.json)"
+
+      - name: Upload downloaded images
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lemon8-images
+          path: ${{ github.event.inputs.output }}/**
+          retention-days: 7
