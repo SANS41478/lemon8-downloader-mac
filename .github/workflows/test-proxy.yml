@@ -141,7 +141,7 @@ jobs:
           bash download.sh "${{ github.event.inputs.url }}" -o /tmp/test_bad -p http://127.0.0.1:19999 2>&1
           echo "EXIT: $?"
 
-      - name: Test 4: Auto http:// prefix
+      - name: Test 4 — Auto http prefix
         run: |
           echo "=== Test: proxy without http:// prefix ==="
           bash download.sh "${{ github.event.inputs.url }}" -o /tmp/test_prefix -p 127.0.0.1:18888 2>&1
