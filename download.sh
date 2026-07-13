@@ -224,7 +224,7 @@ def extract_article():
     images = []
     idx = 0
 
-    def make_hi_res(u, logo_pattern=None):
+    def make_hi_res(u):
         """Replace watermark template with origin quality."""
         return re.sub(r'~tplv-[^./]+', '~tplv-sdweummd6v-origin', u)
 
@@ -244,13 +244,20 @@ def extract_article():
         for img in image_list:
             url = img.get('url', '')
             hi_url = make_hi_res(url)
-            alt_urls = list(set(filter(None,
-                gen_alt_urls(url) + gen_alt_urls(hi_url)
-            )))
+            # 原图优先（保证能看），高清 + 备用 CDN 作为 fallback
+            primary = url
+            fallbacks = []
+            if hi_url and hi_url != url:
+                fallbacks += gen_alt_urls(hi_url)
+            # CDN 备用域名放在最后
+            cdn_alts = gen_alt_urls(url)
+            for u in cdn_alts:
+                if u not in fallbacks and u != primary:
+                    fallbacks.append(u)
             images.append({
                 'index': idx,
-                'url': hi_url or url,
-                'altUrls': alt_urls,
+                'url': primary,
+                'altUrls': fallbacks,
                 'width': img.get('width', 0),
                 'height': img.get('height', 0),
                 'type': 'gallery'
@@ -259,13 +266,18 @@ def extract_article():
     elif article_class == 'Video' and large_image:
         url = large_image.get('url', '')
         hi_url = make_hi_res(url)
-        alt_urls = list(set(filter(None,
-            gen_alt_urls(url) + gen_alt_urls(hi_url)
-        )))
+        primary = url
+        fallbacks = []
+        if hi_url and hi_url != url:
+            fallbacks += gen_alt_urls(hi_url)
+        cdn_alts = gen_alt_urls(url)
+        for u in cdn_alts:
+            if u not in fallbacks and u != primary:
+                fallbacks.append(u)
         images.append({
             'index': 0,
-            'url': hi_url or url,
-            'altUrls': alt_urls,
+            'url': primary,
+            'altUrls': fallbacks,
             'width': large_image.get('width', 0),
             'height': large_image.get('height', 0),
             'type': 'video_cover'
@@ -497,16 +509,24 @@ process_post() {
         local success=0
         for candidate in "${unique_candidates[@]}"; do
             local msg="   DOWNLOAD [$display_idx/$image_count] $filename"
-            [[ "$candidate" != "${unique_candidates[0]}" ]] && msg="$msg (alt CDN)"
+            [[ "$candidate" != "${unique_candidates[0]}" ]] && msg="$msg (alt)"
             printf "%s ... " "$msg"
             if curl_download "$candidate" "$dest_path"; then
                 local fsize
                 fsize=$(wc -c < "$dest_path" 2>/dev/null || echo 0)
                 fsize=$((fsize / 1024))
-                echo "OK (${fsize} KB)"
-                downloaded=$((downloaded + 1))
-                success=1
-                break
+                # 校验是否为有效 WebP（文件头必须是 RIFF）
+                local magic
+                magic=$(head -c 4 "$dest_path" 2>/dev/null)
+                if [[ "$magic" == "RIFF" ]]; then
+                    echo "OK (${fsize} KB)"
+                    downloaded=$((downloaded + 1))
+                    success=1
+                    break
+                else
+                    rm -f "$dest_path"
+                    echo "BAD (not WebP)"
+                fi
             else
                 echo ""
             fi
